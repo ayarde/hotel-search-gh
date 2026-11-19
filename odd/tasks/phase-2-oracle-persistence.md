@@ -24,10 +24,10 @@ verified against a real Oracle Testcontainer.
 
 ## Tasks
 
-- T1 [S1, S2, S6, S7] Dependencies (JDBC, Flyway, ojdbc, Testcontainers), datasource/Hikari config, `V1__create_hotel_search.sql`. Route: inline. Commit: pending.
-- T2 [S3-S5, S8-S12] `JdbcHotelSearchRepository` + `AgesColumn` + unit tests. Route: inline. Commit: pending.
-- T3 [S13-S15] Oracle IT (`src/intTest`) with official image; relocate the app-start check out of unit tests. Route: inline. Commit: pending.
-- T4 Independent verification (Risk item 1: schema migration) and final builds. Route: gentle-ai-verify. Commit: n/a.
+- T1 [S1, S2, S6, S7] Dependencies (JDBC, Flyway, ojdbc, Testcontainers), datasource/Hikari config, `V1__create_hotel_search.sql`. Route: inline. Commit: 4f9c3ef (with `OracleSchemaIT`). Done.
+- T2 [S3-S5, S8-S12] `JdbcHotelSearchRepository` + `AgesColumn` + unit tests. Route: inline. Commits: a3efa6e (`AgesColumn`), 0cf90bf (repository). Done.
+- T3 [S13-S15] Oracle IT (`src/intTest`) with official image; relocate the app-start check out of unit tests. Route: inline. Commits: 4f9c3ef (schema IT), 0cf90bf (repository IT). Done.
+- T4 Independent verification (Risk item 1: schema migration) and final builds. Route: gentle-ai-verify. Commit: n/a. Done: S1-S15 pass.
 
 ## Log
 
@@ -36,3 +36,5 @@ verified against a real Oracle Testcontainer.
 - L3 (decision): adding JDBC + Flyway makes the unit context test `HotelSearchApplicationTest` need a real database; the startup check moves to the Oracle IT (full `@SpringBootTest` + Flyway), the unit test is removed.
 - L4 (evidence): the lite image has no `USERS` tablespace in FREEPDB1 (`ORA-00959`), so the IT app user gets `unlimited tablespace` instead of a quota on `users`. Phase 7 (Compose) needs the same app-user setup.
 - L5 (evidence): `./gradlew clean build -PintegrationTest=true` green: `OracleSchemaIT` 3/3, `JdbcHotelSearchRepositoryIT` 9/9; `./gradlew clean build` green, JaCoCo lines 128/128, branches 39/40.
+- L6 (evidence): independent gentle-ai-verify on 0cf90bf: S1-S15 pass, both builds green (unit 89/89; IT 9/9 + 3/3). Advisories: the count query omits `s.created_at` from the TECHNICAL-DECISIONS §7 example because `HotelSearchCount` does not carry it; `~/.testcontainers.properties` points at a missing Docker Desktop socket; two IT classes start two Oracle containers. RDD assess: reviewDue false (under budget).
+- L7 (slice): 1,327 authored lines in 3 commits, past the ~400-line slice because the tests make up most of it. Commit boundaries: schema 4f9c3ef, ages mapping a3efa6e, repository 0cf90bf. The user chooses the delivery shape.
