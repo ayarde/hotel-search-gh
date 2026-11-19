@@ -1,3 +1,11 @@
 spring:
   application:
     name: hotel-search
+  datasource:
+    url: ${DB_URL:jdbc:oracle:thin:@//localhost:1521/FREEPDB1}
+    username: ${DB_USERNAME:hotel_search}
+    # Sin valor por defecto: la aplicación no arranca sin credenciales explícitas.
+    password: ${DB_PASSWORD}
+    hikari:
+      pool-name: hotel-search-db
+      maximum-pool-size: ${DB_POOL_MAX_SIZE:10}

@@ -39,11 +39,18 @@ configurations {
 dependencies {
     implementation(platform(libs.spring.boot.bom))
     implementation(libs.spring.boot.starter.webmvc)
+    implementation(libs.spring.boot.starter.jdbc)
+    implementation(libs.spring.boot.starter.flyway)
+    implementation(libs.flyway.database.oracle)
+    runtimeOnly(libs.ojdbc)
 
     testImplementation(platform(libs.spring.boot.bom))
     testImplementation(libs.spring.boot.starter.test)
     testImplementation(libs.archunit)
     testRuntimeOnly(libs.junit.platform.launcher)
+
+    "intTestImplementation"(libs.testcontainers)
+    "intTestImplementation"(libs.testcontainers.junit.jupiter)
 }
 
 tasks.withType<JavaCompile>().configureEach {
