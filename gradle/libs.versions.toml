@@ -10,10 +10,12 @@ spring-boot-starter-webmvc = { module = "org.springframework.boot:spring-boot-st
 spring-boot-starter-jdbc = { module = "org.springframework.boot:spring-boot-starter-jdbc" }
 spring-boot-starter-flyway = { module = "org.springframework.boot:spring-boot-starter-flyway" }
 flyway-database-oracle = { module = "org.flywaydb:flyway-database-oracle" }
+spring-boot-starter-kafka = { module = "org.springframework.boot:spring-boot-starter-kafka" }
 ojdbc = { module = "com.oracle.database.jdbc:ojdbc17" }
 spring-boot-starter-test = { module = "org.springframework.boot:spring-boot-starter-test" }
 testcontainers = { module = "org.testcontainers:testcontainers" }
 testcontainers-junit-jupiter = { module = "org.testcontainers:testcontainers-junit-jupiter" }
+testcontainers-kafka = { module = "org.testcontainers:testcontainers-kafka" }
 junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher" }
 archunit = { module = "com.tngtech.archunit:archunit", version.ref = "archunit" }
 

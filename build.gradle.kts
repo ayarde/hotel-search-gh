@@ -42,6 +42,7 @@ dependencies {
     implementation(libs.spring.boot.starter.jdbc)
     implementation(libs.spring.boot.starter.flyway)
     implementation(libs.flyway.database.oracle)
+    implementation(libs.spring.boot.starter.kafka)
     runtimeOnly(libs.ojdbc)
 
     testImplementation(platform(libs.spring.boot.bom))
@@ -51,6 +52,7 @@ dependencies {
 
     "intTestImplementation"(libs.testcontainers)
     "intTestImplementation"(libs.testcontainers.junit.jupiter)
+    "intTestImplementation"(libs.testcontainers.kafka)
 }
 
 tasks.withType<JavaCompile>().configureEach {

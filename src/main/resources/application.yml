@@ -9,3 +9,24 @@ spring:
     hikari:
       pool-name: hotel-search-db
       maximum-pool-size: ${DB_POOL_MAX_SIZE:10}
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      # El POST solo responde cuando todas las réplicas en sincronía confirmaron.
+      acks: all
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JacksonJsonSerializer
+      properties:
+        enable.idempotence: true
+        # Tope total de un envío, reintentos nativos del producer incluidos.
+        delivery.timeout.ms: ${KAFKA_DELIVERY_TIMEOUT_MS:10000}
+        request.timeout.ms: ${KAFKA_REQUEST_TIMEOUT_MS:3000}
+        # Espera máxima de send() por metadata cuando no hay broker; el valor
+        # por defecto del cliente (60 s) dejaría el POST colgado un minuto.
+        max.block.ms: ${KAFKA_MAX_BLOCK_MS:5000}
+        # El contrato del mensaje es el JSON, no el nombre de una clase Java.
+        spring.json.add.type.headers: false
+
+hotel-search:
+  kafka:
+    searches-topic: hotel_availability_searches

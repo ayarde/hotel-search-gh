@@ -217,6 +217,33 @@ class HexagonalArchitectureTest {
     }
 
     /**
+     * Verifica que la publicación en Kafka no participa de transacciones: el
+     * POST espera el ACK del broker sin tener abierta una transacción Oracle.
+     * La capa de aplicación ya no puede depender de Spring, así que el único
+     * punto donde podría aparecer es el adaptador.
+     *
+     * Condiciones:
+     * - Clases en ..infrastructure.output.kafka..
+     *
+     * Se espera:
+     * - Ninguna dependencia hacia APIs de transacciones de Spring o Jakarta
+     */
+    @Test
+    void kafkaPublisher_DoesNotUseTransactions() {
+        // given
+        ArchRule rule = noClasses().that().resideInAPackage("..infrastructure.output.kafka..")
+                .should().dependOnClassesThat()
+                .resideInAnyPackage("org.springframework.transaction..", "jakarta.transaction..");
+
+        // when
+        EvaluationResult result = rule.evaluate(CLASSES);
+
+        // then
+        assertFalse(result.hasViolation(),
+                "El publisher de Kafka no debería abrir ni unirse a transacciones\n" + result.getFailureReport());
+    }
+
+    /**
      * Verifica que no hay ciclos entre paquetes, que son la forma habitual en
      * que una frontera se rompe sin que ninguna regla puntual lo detecte.
      *
