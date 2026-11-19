@@ -14,6 +14,7 @@ import com.hotelsearch.domain.HotelSearchEvent;
 import com.hotelsearch.domain.SearchId;
 import com.hotelsearch.infrastructure.config.KafkaProducerConfiguration;
 import java.io.IOException;
+import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.time.Duration;
 import java.time.Instant;
@@ -78,7 +79,9 @@ class KafkaHotelSearchPublisherIT {
     @Value("${hotel-search.kafka.searches-topic}")
     private String topic;
 
-    private ProducerFactory<String, HotelSearchMessage> unreachableProducerFactory;
+    private ProducerFactory<String, HotelSearchMessage> silentProducerFactory;
+
+    private ServerSocket silentBroker;
 
     @DynamicPropertySource
     static void kafkaProperties(DynamicPropertyRegistry registry) {
@@ -86,9 +89,12 @@ class KafkaHotelSearchPublisherIT {
     }
 
     @AfterEach
-    void closeUnreachableProducer() {
-        if (unreachableProducerFactory != null) {
-            unreachableProducerFactory.reset();
+    void closeSilentBroker() throws IOException {
+        if (silentProducerFactory != null) {
+            silentProducerFactory.reset();
+        }
+        if (silentBroker != null) {
+            silentBroker.close();
         }
     }
 
@@ -166,11 +172,14 @@ class KafkaHotelSearchPublisherIT {
     }
 
     /**
-     * Verifica que, sin broker alcanzable, publish falla con el error del
+     * Verifica que, si el broker no responde, publish falla con el error del
      * puerto dentro del tiempo configurado en lugar de quedar bloqueado.
      *
      * Condiciones:
-     * - Misma configuración de producer, bootstrap a un puerto local sin broker
+     * - Misma configuración de producer, bootstrap a un puerto local que
+     *   acepta conexiones pero nunca responde
+     * - El socket queda abierto durante todo el test, así ningún otro
+     *   proceso puede ocupar ese puerto
      *
      * Se espera:
      * - HotelSearchPublicationException
@@ -178,22 +187,24 @@ class KafkaHotelSearchPublisherIT {
      * - El fallo llega antes de delivery.timeout.ms (10 s)
      */
     @Test
-    void publish_BrokerUnreachable_ThrowsPublicationExceptionWithinTimeout() throws IOException {
+    void publish_BrokerNotResponding_ThrowsPublicationExceptionWithinTimeout() throws IOException {
         // given
-        unreachableProducerFactory = producerFactory.copyWithConfigurationOverride(
-                Map.of(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:" + freeLocalPort()));
-        HotelSearchPublisher unreachablePublisher =
-                new KafkaHotelSearchPublisher(new KafkaTemplate<>(unreachableProducerFactory), topic);
+        silentBroker = new ServerSocket(0, 50, InetAddress.getLoopbackAddress());
+        silentProducerFactory = producerFactory.copyWithConfigurationOverride(Map.of(
+                ProducerConfig.BOOTSTRAP_SERVERS_CONFIG,
+                "%s:%d".formatted(silentBroker.getInetAddress().getHostAddress(), silentBroker.getLocalPort())));
+        HotelSearchPublisher silentPublisher =
+                new KafkaHotelSearchPublisher(new KafkaTemplate<>(silentProducerFactory), topic);
         HotelSearchEvent event = new HotelSearchEvent(SearchId.generate(),
                 HotelSearch.of(HOTEL_ID, CHECK_IN, CHECK_OUT, AGES), CREATED_AT);
         Instant start = Instant.now();
 
         // when
-        Executable action = () -> unreachablePublisher.publish(event);
+        Executable action = () -> silentPublisher.publish(event);
 
         // then
         HotelSearchPublicationException thrown = assertThrows(HotelSearchPublicationException.class, action,
-                "Sin broker la publicación debería fallar");
+                "Sin respuesta del broker la publicación debería fallar");
         Duration elapsed = Duration.between(start, Instant.now());
         assertAll(
                 () -> assertTrue(causes(thrown).anyMatch(TimeoutException.class::isInstance),
@@ -237,10 +248,5 @@ class KafkaHotelSearchPublisherIT {
         return Stream.iterate(thrown.getCause(), cause -> cause != null, Throwable::getCause);
     }
 
-    private static int freeLocalPort() throws IOException {
-        try (ServerSocket socket = new ServerSocket(0)) {
-            return socket.getLocalPort();
-        }
-    }
     // </editor-fold>
 }

@@ -44,6 +44,10 @@ public class KafkaHotelSearchPublisher implements HotelSearchPublisher {
             // excepción al serializar y KafkaTemplate envuelve los fallos
             // inmediatos, como no obtener metadata antes de max.block.ms.
             throw notConfirmed(searchId, e);
+        } catch (IllegalStateException e) {
+            // Producer ya cerrado (shutdown del contexto) o future cancelado:
+            // CancellationException extiende IllegalStateException.
+            throw notConfirmed(searchId, e);
         }
     }
 

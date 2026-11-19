@@ -17,10 +17,12 @@ import static org.mockito.Mockito.when;
 
 import com.hotelsearch.application.port.out.HotelSearchPublicationException;
 import java.time.Duration;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicReference;
 import org.apache.kafka.common.errors.SerializationException;
 import org.apache.kafka.common.errors.TimeoutException;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -49,6 +51,13 @@ class KafkaHotelSearchPublisherTest {
     @BeforeEach
     void setUp() {
         publisher = new KafkaHotelSearchPublisher(kafkaTemplate, TOPIC);
+    }
+
+    // Si un test que interrumpe el thread falla antes de limpiar el flag, el
+    // siguiente test del mismo worker no debe heredarlo.
+    @AfterEach
+    void clearInterruptFlag() {
+        Thread.interrupted();
     }
 
     /**
@@ -219,10 +228,62 @@ class KafkaHotelSearchPublisherTest {
         // then
         HotelSearchPublicationException thrown = assertThrows(HotelSearchPublicationException.class, action,
                 "Una espera interrumpida debería informarse como fallo de publicación");
-        boolean stillInterrupted = Thread.interrupted();
+        boolean stillInterrupted = Thread.currentThread().isInterrupted();
         assertAll(
                 () -> assertInstanceOf(InterruptedException.class, thrown.getCause(),
                         "La causa debería ser la interrupción"),
                 () -> assertTrue(stillInterrupted, "El flag de interrupción debería restaurarse"));
+    }
+
+    /**
+     * Verifica que un future cancelado, que nunca va a recibir ACK, se
+     * informa como publicación no confirmada.
+     *
+     * Condiciones:
+     * - El future del envío está cancelado
+     *
+     * Se espera:
+     * - HotelSearchPublicationException con CancellationException como causa
+     */
+    @Test
+    void publish_SendCancelled_ThrowsPublicationException() {
+        // given
+        CompletableFuture<SendResult<String, HotelSearchMessage>> cancelled = new CompletableFuture<>();
+        cancelled.cancel(false);
+        when(kafkaTemplate.send(TOPIC, KEY, HotelSearchMessage.from(event()))).thenReturn(cancelled);
+
+        // when
+        Executable action = () -> publisher.publish(event());
+
+        // then
+        HotelSearchPublicationException thrown = assertThrows(HotelSearchPublicationException.class, action,
+                "Un envío cancelado debería informarse como fallo de publicación");
+        assertInstanceOf(CancellationException.class, thrown.getCause(), "La causa debería ser la cancelación");
+    }
+
+    /**
+     * Verifica que enviar con el producer ya cerrado, como ocurre durante el
+     * shutdown del contexto, se informa como publicación no confirmada.
+     *
+     * Condiciones:
+     * - send() lanza IllegalStateException por producer cerrado
+     *
+     * Se espera:
+     * - HotelSearchPublicationException con la excepción original como causa
+     */
+    @Test
+    void publish_ProducerClosed_ThrowsPublicationException() {
+        // given
+        IllegalStateException closed =
+                new IllegalStateException("Cannot perform operation after producer has been closed");
+        when(kafkaTemplate.send(eq(TOPIC), eq(KEY), any(HotelSearchMessage.class))).thenThrow(closed);
+
+        // when
+        Executable action = () -> publisher.publish(event());
+
+        // then
+        HotelSearchPublicationException thrown = assertThrows(HotelSearchPublicationException.class, action,
+                "Enviar con el producer cerrado debería informarse como fallo de publicación");
+        assertSame(closed, thrown.getCause(), "La causa debería ser el error del producer cerrado");
     }
 }
