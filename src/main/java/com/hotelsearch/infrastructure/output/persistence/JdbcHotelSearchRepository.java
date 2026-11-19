@@ -15,7 +15,6 @@ import java.util.Objects;
 import java.util.Optional;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.simple.JdbcClient;
-import org.springframework.stereotype.Repository;
 
 /**
  * Repositorio de búsquedas sobre Oracle con Spring JDBC.
@@ -26,8 +25,9 @@ import org.springframework.stereotype.Repository;
  *
  * <p>{@code created_at} se guarda en UTC porque la columna es un
  * {@code TIMESTAMP} sin zona horaria.
+ *
+ * <p>El bean se declara en {@code PersistenceConfiguration}.
  */
-@Repository
 public class JdbcHotelSearchRepository implements HotelSearchRepository {
 
     // ORA-00001: violación de una constraint unique o primary key.
