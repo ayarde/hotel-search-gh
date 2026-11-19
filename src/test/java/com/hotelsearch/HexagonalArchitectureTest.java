@@ -52,27 +52,31 @@ class HexagonalArchitectureTest {
 
     /**
      * Verifica que la aplicación no depende de infraestructura ni de
-     * frameworks.
+     * frameworks. La única excepción es la anotación {@code @Transactional},
+     * que marca el límite transaccional del caso de uso que persiste
+     * (TECHNICAL-DECISIONS §6).
      *
      * Condiciones:
      * - Clases de producción en com.hotelsearch.application
      *
      * Se espera:
-     * - Solo dependencias hacia java.., el dominio y la propia aplicación
+     * - Solo dependencias hacia java.., el dominio, la propia aplicación y
+     *   org.springframework.transaction.annotation
      */
     @Test
     void application_DependsOnlyOnJavaDomainAndApplication() {
         // given
         ArchRule rule = classes().that().resideInAPackage("com.hotelsearch.application..")
                 .should().onlyDependOnClassesThat()
-                .resideInAnyPackage("java..", "com.hotelsearch.domain..", "com.hotelsearch.application..");
+                .resideInAnyPackage("java..", "com.hotelsearch.domain..", "com.hotelsearch.application..",
+                        "org.springframework.transaction.annotation..");
 
         // when
         EvaluationResult result = rule.evaluate(CLASSES);
 
         // then
         assertFalse(result.hasViolation(),
-                "La aplicación solo puede depender de java, del dominio y de sí misma\n"
+                "La aplicación solo puede depender de java, del dominio, de sí misma y de @Transactional\n"
                         + result.getFailureReport());
     }
 
@@ -219,8 +223,8 @@ class HexagonalArchitectureTest {
     /**
      * Verifica que la publicación en Kafka no participa de transacciones: el
      * POST espera el ACK del broker sin tener abierta una transacción Oracle.
-     * La capa de aplicación ya no puede depender de Spring, así que el único
-     * punto donde podría aparecer es el adaptador.
+     * El único caso de uso transaccional es el que persiste desde el consumer,
+     * así que el punto donde podría aparecer es el adaptador.
      *
      * Condiciones:
      * - Clases en ..infrastructure.output.kafka..

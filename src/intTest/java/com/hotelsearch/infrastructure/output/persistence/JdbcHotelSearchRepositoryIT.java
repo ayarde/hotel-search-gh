@@ -43,7 +43,8 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * creado por Flyway al arrancar la aplicación.
  */
 @Testcontainers
-@SpringBootTest
+// Sin broker en este test: el listener no arranca y no se crean topics al iniciar.
+@SpringBootTest(properties = {"spring.kafka.listener.auto-startup=false", "spring.kafka.admin.auto-create=false"})
 class JdbcHotelSearchRepositoryIT {
 
     @Container

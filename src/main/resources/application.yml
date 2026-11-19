@@ -26,7 +26,20 @@ spring:
         max.block.ms: ${KAFKA_MAX_BLOCK_MS:5000}
         # El contrato del mensaje es el JSON, no el nombre de una clase Java.
         spring.json.add.type.headers: false
+    consumer:
+      group-id: hotel-search
+      # Un grupo nuevo lee desde el principio: los eventos aceptados antes de
+      # que el consumer arranque también se persisten.
+      auto-offset-reset: earliest
+      # El offset lo confirma el container después del commit en Oracle.
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      # El listener interpreta el JSON; el DLT recibe los bytes originales.
+      value-deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
+    listener:
+      ack-mode: record
 
 hotel-search:
   kafka:
     searches-topic: hotel_availability_searches
+    dead-letter-topic: hotel_search_dlt

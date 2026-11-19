@@ -27,7 +27,8 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * de escrituras que no pasan por el dominio.
  */
 @Testcontainers
-@SpringBootTest
+// Sin broker en este test: el listener no arranca y no se crean topics al iniciar.
+@SpringBootTest(properties = {"spring.kafka.listener.auto-startup=false", "spring.kafka.admin.auto-create=false"})
 class OracleSchemaIT {
 
     @Container

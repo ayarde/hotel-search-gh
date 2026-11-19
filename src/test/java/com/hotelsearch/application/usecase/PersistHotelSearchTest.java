@@ -2,6 +2,7 @@ package com.hotelsearch.application.usecase;
 
 import static com.hotelsearch.HotelSearchFixtures.event;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -10,11 +11,13 @@ import static org.mockito.Mockito.when;
 
 import com.hotelsearch.application.port.out.HotelSearchRepository;
 import com.hotelsearch.domain.HotelSearchEvent;
+import java.lang.reflect.Method;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.function.Executable;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.transaction.annotation.Transactional;
 
 @ExtendWith(MockitoExtension.class)
 class PersistHotelSearchTest {
@@ -95,6 +98,29 @@ class PersistHotelSearchTest {
         IllegalStateException exception = assertThrows(IllegalStateException.class, action,
                 "El error de persistencia debería propagarse");
         assertSame(failure, exception, "Debería propagarse la excepción original");
+    }
+
+    /**
+     * Verifica que la persistencia corre en una transacción Oracle propia: el
+     * listener retorna, y el offset se confirma, solo después del commit.
+     *
+     * Condiciones:
+     * - Declaración del método persist
+     *
+     * Se espera:
+     * - Anotado con @Transactional, sin readOnly
+     */
+    @Test
+    void persist_Declaration_IsTransactional() throws NoSuchMethodException {
+        // given
+        Method persist = PersistHotelSearch.class.getMethod("persist", HotelSearchEvent.class);
+
+        // when
+        Transactional transactional = persist.getAnnotation(Transactional.class);
+
+        // then
+        assertNotNull(transactional, "persist debería ser transaccional");
+        assertFalse(transactional.readOnly(), "La transacción de persist debería permitir escritura");
     }
 
 }
