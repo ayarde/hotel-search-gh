@@ -18,7 +18,9 @@ import com.hotelsearch.domain.InvalidHotelSearchException;
 import com.hotelsearch.domain.SearchId;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -253,6 +255,47 @@ class HotelSearchListenerTest {
                         "Una edad negativa debería rechazarse"),
                 () -> assertThrows(InvalidHotelSearchException.class, missingAge,
                         "Una edad null debería rechazarse"));
+        verifyNoInteractions(persistHotelSearch);
+    }
+
+    /**
+     * Verifica que un mensaje legible pero incompleto o con un UUID mal
+     * escrito falla con InvalidHotelSearchException, que el error handler
+     * envía directo al DLT. Otra excepción (NullPointerException,
+     * IllegalArgumentException) se reintentaría como si fuera transitoria.
+     *
+     * Condiciones:
+     * - searchId que no es un UUID canónico
+     * - Sin hotelId, sin checkIn, sin checkOut y sin createdAt
+     *
+     * Se espera:
+     * - InvalidHotelSearchException con el campo afectado en cada caso
+     * - El caso de uso no se invoca
+     */
+    @Test
+    void onMessage_IncompleteOrMalformedFields_ThrowsInvalidHotelSearch() {
+        // given
+        Map<String, byte[]> payloads = new LinkedHashMap<>();
+        payloads.put("searchId debe ser un UUID canónico de 36 caracteres", VALID_MESSAGE
+                .replace("3f2c8a1e-9b4d-4c6e-8f1a-2b3c4d5e6f70", "3f2c8a1e").getBytes(UTF_8));
+        payloads.put("hotelId es obligatorio", VALID_MESSAGE
+                .replace("\"hotelId\":\"550e8400-e29b-41d4-a716-446655440000\",", "").getBytes(UTF_8));
+        payloads.put("checkIn es obligatorio", VALID_MESSAGE
+                .replace("\"checkIn\":\"2026-11-09\",", "").getBytes(UTF_8));
+        payloads.put("checkOut es obligatorio", VALID_MESSAGE
+                .replace(",\"checkOut\":\"2026-11-29\"", "").getBytes(UTF_8));
+        payloads.put("createdAt es obligatorio", VALID_MESSAGE
+                .replace(",\"createdAt\":\"2026-11-17T12:00:00Z\"", "").getBytes(UTF_8));
+
+        // when
+        Map<String, Executable> actions = new LinkedHashMap<>();
+        payloads.forEach((expectedMessage, payload) -> actions.put(expectedMessage, () -> listener.onMessage(payload)));
+
+        // then
+        assertAll(actions.entrySet().stream().map(entry -> () -> assertEquals(entry.getKey(),
+                assertThrows(InvalidHotelSearchException.class, entry.getValue(),
+                        "Debería rechazarse como búsqueda inválida: " + entry.getKey()).getMessage(),
+                "Debería informar el campo afectado")));
         verifyNoInteractions(persistHotelSearch);
     }
 

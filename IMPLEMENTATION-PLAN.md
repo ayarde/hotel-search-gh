@@ -139,6 +139,8 @@ Aplicar `TESTING_RULES.md` en todas las fases que generen tests.
 - Implementar persistencia transaccional.
 - Configurar `DefaultErrorHandler`, tres reintentos adicionales con 1
   segundo de intervalo.
+- Oracle no disponible (conexión o inicio de transacción): reintentos
+  sin límite con backoff exponencial de 1 s a 30 s, sin DLT.
 - Errores permanentes al DLT directamente.
 - Configurar `DeadLetterPublishingRecoverer` y topic `hotel_search_dlt`.
 - Crear ambos topics explícitamente con una partición y replication
@@ -152,6 +154,8 @@ Aplicar `TESTING_RULES.md` en todas las fases que generen tests.
 - Redelivery del mismo mensaje no crea una segunda fila.
 - Duplicado PK se descarta sin ocultar otros errores SQL.
 - Tras tres reintentos adicionales, error transitorio va al DLT.
+- Oracle no disponible no va al DLT ni confirma el offset mientras dure
+  la caída; cuando vuelve, el mensaje se persiste.
 - Error permanente va directamente al DLT.
 - No hay consumidor automático del DLT.
 

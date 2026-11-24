@@ -25,6 +25,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
@@ -32,7 +33,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
 import org.apache.kafka.clients.admin.Admin;
@@ -64,7 +65,8 @@ import org.mockito.ArgumentMatcher;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.dao.RecoverableDataAccessException;
+import org.springframework.dao.CannotAcquireLockException;
+import org.springframework.jdbc.CannotGetJdbcConnectionException;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
 import org.springframework.kafka.listener.MessageListenerContainer;
@@ -108,6 +110,10 @@ class HotelSearchConsumerIT {
     private static final Duration MIN_RETRY_SPAN = Duration.ofMillis(2_900);
     // Con un solo reintento ya se sumaría 1 s; con los tres, al menos 3 s.
     private static final Duration MAX_DIRECT_DLT_DELAY = Duration.ofSeconds(3);
+    // Un intento más que el camino finito: con tres reintentos iría al DLT.
+    private static final int OUTAGE_ATTEMPTS = 4;
+    // Back-off de la caída: 1 + 2 + 4 + 8 = 15 s, más margen para el arranque.
+    private static final Duration OUTAGE_WAIT_TIMEOUT = Duration.ofSeconds(45);
 
     @Autowired
     private HotelSearchPublisher publisher;
@@ -243,23 +249,26 @@ class HotelSearchConsumerIT {
     }
 
     /**
-     * Verifica el tratamiento de un error transitorio de Oracle: cada
-     * intento hace rollback, se reintenta tres veces a 1 s y el mensaje
-     * termina en el DLT. El offset no se confirma mientras el registro está
-     * en proceso.
+     * Verifica el tratamiento de un error transitorio de Oracle que no es
+     * una caída: cada intento hace rollback, se reintenta tres veces a 1 s y
+     * el mensaje termina en el DLT. El offset no se confirma mientras el
+     * registro está en proceso.
      *
      * Condiciones:
-     * - save hace el INSERT real y después lanza
-     *   RecoverableDataAccessException, en todos los intentos
+     * - save hace el INSERT real y después lanza CannotAcquireLockException,
+     *   en todos los intentos
      * - Mensaje publicado como bytes JSON con key = searchId
      *
      * Se espera:
      * - Cuatro intentos, separados en total por al menos 3 s
      * - Cada INSERT real encuentra la tabla sin la fila (rollback previo)
      * - Ninguna fila al final
-     * - Durante el primer intento el offset no supera al registro
+     * - En cada intento, ya hecho el INSERT y con la transacción abierta, el
+     *   offset confirmado no supera al registro; una confirmación anticipada
+     *   (por ejemplo, ack al fallar el primer intento) se vería en los
+     *   reintentos
      * - Un registro en el DLT con la misma key y los mismos bytes, y la
-     *   causa RecoverableDataAccessException en los headers
+     *   causa CannotAcquireLockException en los headers
      * - Después del DLT, offset confirmado más allá del registro
      */
     @Test
@@ -269,14 +278,12 @@ class HotelSearchConsumerIT {
         byte[] payload = json(searchId, "[29,28,4,3]");
         List<Long> failureNanos = new CopyOnWriteArrayList<>();
         List<Object> realInsertResults = new CopyOnWriteArrayList<>();
-        AtomicLong committedOnFirstAttempt = new AtomicLong(Long.MAX_VALUE);
+        List<Long> committedDuringAttempts = new CopyOnWriteArrayList<>();
         doAnswer(invocation -> {
-            if (failureNanos.isEmpty()) {
-                committedOnFirstAttempt.set(committedOffset());
-            }
             realInsertResults.add(invocation.callRealMethod());
+            committedDuringAttempts.add(committedOffset());
             failureNanos.add(System.nanoTime());
-            throw new RecoverableDataAccessException("Oracle no disponible (simulado)");
+            throw new CannotAcquireLockException("Bloqueo no disponible (simulado)");
         }).when(repository).save(argThat(hasSearchId(searchId)));
 
         // when
@@ -293,11 +300,69 @@ class HotelSearchConsumerIT {
                 () -> assertEquals(List.of(true, true, true, true), realInsertResults,
                         "Cada intento debería insertar sobre una tabla sin la fila del intento anterior"),
                 () -> assertEquals(0, rowCount(searchId), "El rollback no debería dejar la fila"),
-                () -> assertTrue(committedOnFirstAttempt.get() <= published.offset(),
-                        "El offset no debería confirmarse antes del commit en Oracle"),
+                () -> assertEquals(4, committedDuringAttempts.size(),
+                        "Debería leerse el offset en cada intento"),
+                () -> assertTrue(committedDuringAttempts.stream().allMatch(offset -> offset <= published.offset()),
+                        "El offset no debería confirmarse mientras la transacción Oracle sigue abierta: "
+                                + committedDuringAttempts),
                 () -> assertArrayEquals(payload, deadLetter.value(), "El DLT debería recibir los bytes originales"),
-                () -> assertEquals(RecoverableDataAccessException.class.getName(), causeFqcn(deadLetter),
+                () -> assertEquals(CannotAcquireLockException.class.getName(), causeFqcn(deadLetter),
                         "El DLT debería informar la causa original"));
+    }
+
+    /**
+     * Verifica que una caída de Oracle más larga que los tres reintentos del
+     * camino finito no manda la búsqueda al DLT: se sigue reintentando y,
+     * cuando Oracle vuelve, la fila se persiste.
+     *
+     * Condiciones:
+     * - save lanza CannotGetJdbcConnectionException en los cuatro primeros
+     *   intentos, sin llegar a Oracle, y hace el INSERT real en el quinto
+     * - Mensaje publicado como bytes JSON con key = searchId
+     *
+     * Se espera:
+     * - Cinco intentos y una fila con los valores del mensaje
+     * - En cada intento fallido el offset confirmado no supera al registro
+     * - Después de persistir, offset confirmado más allá del registro
+     * - Nada en el DLT con esa key
+     */
+    @Test
+    void onMessage_OracleUnavailableLongerThanRetries_PersistsWhenOracleReturns() throws Exception {
+        // given
+        SearchId searchId = SearchId.generate();
+        byte[] payload = json(searchId, "[29,28,4,3]");
+        AtomicInteger attempts = new AtomicInteger();
+        List<Long> committedDuringOutage = new CopyOnWriteArrayList<>();
+        doAnswer(invocation -> {
+            if (attempts.incrementAndGet() > OUTAGE_ATTEMPTS) {
+                return invocation.callRealMethod();
+            }
+            committedDuringOutage.add(committedOffset());
+            throw new CannotGetJdbcConnectionException("Oracle no disponible (simulado)");
+        }).when(repository).save(argThat(hasSearchId(searchId)));
+
+        // when
+        RecordMetadata published = send(searchId, payload);
+
+        // then
+        await().atMost(OUTAGE_WAIT_TIMEOUT).until(() -> rowCount(searchId) == 1);
+        await().atMost(WAIT_TIMEOUT).until(() -> committedOffset() > published.offset());
+        Map<String, Object> row = storedRow(searchId);
+        List<ConsumerRecord<String, byte[]>> deadLetters = deadLetters(searchId);
+        assertAll(
+                () -> assertEquals(OUTAGE_ATTEMPTS + 1, attempts.get(),
+                        "Deberían ser cuatro intentos fallidos y uno exitoso"),
+                () -> assertEquals(OUTAGE_ATTEMPTS, committedDuringOutage.size(),
+                        "Debería leerse el offset en cada intento fallido"),
+                () -> assertTrue(committedDuringOutage.stream().allMatch(offset -> offset <= published.offset()),
+                        "El offset no debería confirmarse mientras Oracle no está disponible: "
+                                + committedDuringOutage),
+                () -> assertEquals(HOTEL_ID, row.get("hotel_id"), "hotel_id inesperado"),
+                () -> assertEquals("[29,28,4,3]", row.get("ages"), "ages debería conservar el orden"),
+                () -> assertEquals("2026-11-09", row.get("check_in"), "check_in inesperado"),
+                () -> assertEquals("2026-11-29", row.get("check_out"), "check_out inesperado"),
+                () -> assertEquals("2026-11-17 12:00:00.000000", row.get("created_at"), "created_at inesperado"),
+                () -> assertTrue(deadLetters.isEmpty(), "Una caída de Oracle no debería llegar al DLT"));
     }
 
     /**
@@ -427,19 +492,7 @@ class HotelSearchConsumerIT {
 
     private ConsumerRecord<String, byte[]> deadLetter(SearchId searchId) {
         String key = searchId.value().toString();
-        Map<String, Object> config = Map.of(
-                ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers(),
-                ConsumerConfig.GROUP_ID_CONFIG, "dlt-reader-" + UUID.randomUUID(),
-                ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest",
-                ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false,
-                ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class,
-                ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class);
-        try (KafkaConsumer<String, byte[]> consumer = new KafkaConsumer<>(config)) {
-            List<TopicPartition> partitions = consumer.partitionsFor(deadLetterTopic).stream()
-                    .map(info -> new TopicPartition(deadLetterTopic, info.partition()))
-                    .toList();
-            consumer.assign(partitions);
-            consumer.seekToBeginning(partitions);
+        try (KafkaConsumer<String, byte[]> consumer = deadLetterConsumer()) {
             Instant deadline = Instant.now().plus(WAIT_TIMEOUT);
             while (Instant.now().isBefore(deadline)) {
                 List<ConsumerRecord<String, byte[]>> found =
@@ -453,6 +506,46 @@ class HotelSearchConsumerIT {
             }
             throw new AssertionError("No llegó al DLT el registro con key " + key);
         }
+    }
+
+    /** Lee el DLT completo, desde el principio hasta el final actual. */
+    private List<ConsumerRecord<String, byte[]>> deadLetters(SearchId searchId) {
+        String key = searchId.value().toString();
+        List<ConsumerRecord<String, byte[]>> found = new ArrayList<>();
+        try (KafkaConsumer<String, byte[]> consumer = deadLetterConsumer()) {
+            Map<TopicPartition, Long> endOffsets = consumer.endOffsets(consumer.assignment(), CLIENT_TIMEOUT);
+            Instant deadline = Instant.now().plus(WAIT_TIMEOUT);
+            while (endOffsets.entrySet().stream()
+                    .anyMatch(end -> consumer.position(end.getKey(), CLIENT_TIMEOUT) < end.getValue())) {
+                if (Instant.now().isAfter(deadline)) {
+                    throw new AssertionError("No se pudo leer el DLT hasta el final");
+                }
+                consumer.poll(Duration.ofMillis(500)).forEach(record -> {
+                    if (key.equals(record.key())) {
+                        found.add(record);
+                    }
+                });
+            }
+        }
+        return found;
+    }
+
+    /** Consumer sin grupo compartido, posicionado al principio del DLT. */
+    private KafkaConsumer<String, byte[]> deadLetterConsumer() {
+        Map<String, Object> config = Map.of(
+                ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers(),
+                ConsumerConfig.GROUP_ID_CONFIG, "dlt-reader-" + UUID.randomUUID(),
+                ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest",
+                ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false,
+                ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class,
+                ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class);
+        KafkaConsumer<String, byte[]> consumer = new KafkaConsumer<>(config);
+        List<TopicPartition> partitions = consumer.partitionsFor(deadLetterTopic).stream()
+                .map(info -> new TopicPartition(deadLetterTopic, info.partition()))
+                .toList();
+        consumer.assign(partitions);
+        consumer.seekToBeginning(partitions);
+        return consumer;
     }
 
     private Admin admin() {

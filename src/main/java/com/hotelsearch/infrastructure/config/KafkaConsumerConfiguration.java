@@ -14,6 +14,9 @@ import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.dao.DataAccessResourceFailureException;
+import org.springframework.dao.RecoverableDataAccessException;
+import org.springframework.dao.TransientDataAccessResourceException;
 import org.springframework.kafka.config.TopicBuilder;
 import org.springframework.kafka.core.KafkaOperations;
 import org.springframework.kafka.core.KafkaTemplate;
@@ -21,6 +24,9 @@ import org.springframework.kafka.core.ProducerFactory;
 import org.springframework.kafka.listener.ConsumerRecordRecoverer;
 import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
 import org.springframework.kafka.listener.DefaultErrorHandler;
+import org.springframework.transaction.CannotCreateTransactionException;
+import org.springframework.util.backoff.BackOff;
+import org.springframework.util.backoff.ExponentialBackOff;
 import org.springframework.util.backoff.FixedBackOff;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -36,6 +42,10 @@ public class KafkaConsumerConfiguration {
 
     private static final long RETRY_INTERVAL_MS = 1_000L;
     private static final long ADDITIONAL_ATTEMPTS = 3L;
+    private static final double OUTAGE_BACK_OFF_MULTIPLIER = 2.0;
+    // El back-off duerme en el hilo del consumer: el tope tiene que quedar
+    // muy por debajo de max.poll.interval.ms (300 s por defecto).
+    private static final long OUTAGE_MAX_INTERVAL_MS = 30_000L;
     // Con un broker, más particiones o réplicas no aportan nada.
     private static final int PARTITIONS = 1;
     private static final int REPLICAS = 1;
@@ -84,6 +94,17 @@ public class KafkaConsumerConfiguration {
      * transitorios; los permanentes van al DLT en el primer intento. Si la
      * publicación en el DLT falla, el registro no se da por recuperado y el
      * offset no se confirma.
+     *
+     * <p>Oracle no disponible (sin conexión o sin poder iniciar la
+     * transacción) es la excepción: una caída de más de unos 3 s mandaría al
+     * DLT búsquedas válidas, así que se reintenta sin límite con back-off
+     * exponencial de 1 s a 30 s y el offset queda sin confirmar hasta que
+     * Oracle vuelve. Como eso frena la única partición, solo se listan tipos
+     * de conexión e inicio de transacción; bloqueos, timeouts y errores de
+     * datos siguen el camino finito. Si el mismo registro pasa a fallar por
+     * otro motivo, el handler reinicia la cuenta con el back-off que
+     * corresponda al nuevo error ({@code resetStateOnExceptionChange}, activo
+     * por defecto).
      */
     @Bean
     DefaultErrorHandler hotelSearchErrorHandler(ConsumerRecordRecoverer deadLetterRecoverer) {
@@ -91,7 +112,35 @@ public class KafkaConsumerConfiguration {
                 deadLetterRecoverer, new FixedBackOff(RETRY_INTERVAL_MS, ADDITIONAL_ATTEMPTS));
         errorHandler.addNotRetryableExceptions(
                 InvalidHotelSearchMessageException.class, InvalidHotelSearchException.class);
+        errorHandler.setBackOffFunction((record, exception) -> backOffFor(exception));
         return errorHandler;
+    }
+
+    /**
+     * Back-off propio para Oracle no disponible, o {@code null} para que se
+     * aplique el del error handler.
+     *
+     * <p>Se recorre toda la cadena de causas: el container entrega el error
+     * envuelto en {@code ListenerExecutionFailedException} y Spring puede
+     * anidar la excepción de conexión dentro de otra.
+     */
+    static BackOff backOffFor(Exception exception) {
+        for (Throwable cause = exception; cause != null; cause = cause.getCause()) {
+            if (isInfrastructureUnavailable(cause)) {
+                ExponentialBackOff backOff = new ExponentialBackOff(RETRY_INTERVAL_MS, OUTAGE_BACK_OFF_MULTIPLIER);
+                backOff.setMaxInterval(OUTAGE_MAX_INTERVAL_MS);
+                // Sin límite de intentos ni de tiempo: son los valores por defecto.
+                return backOff;
+            }
+        }
+        return null;
+    }
+
+    private static boolean isInfrastructureUnavailable(Throwable exception) {
+        return exception instanceof CannotCreateTransactionException
+                || exception instanceof DataAccessResourceFailureException
+                || exception instanceof TransientDataAccessResourceException
+                || exception instanceof RecoverableDataAccessException;
     }
 
     static DeadLetterPublishingRecoverer deadLetterRecoverer(

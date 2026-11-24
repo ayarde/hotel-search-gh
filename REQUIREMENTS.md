@@ -162,6 +162,9 @@ El esquema se gestiona con Flyway. Los nombres SQL (tablas, columnas,
   activada.
 - Consumer: tres reintentos adicionales, 1 segundo entre reintentos;
   luego DLT.
+- Oracle no disponible (conexión o inicio de transacción): reintentos
+  sin límite con backoff exponencial de 1 s a 30 s; no va al DLT y no
+  confirma el offset mientras dure la caída.
 - Errores permanentes se envían directamente a DLT.
 - Si no se puede publicar al DLT, no confirmar el offset original.
 - ACK del mensaje original solo después de commit Oracle.

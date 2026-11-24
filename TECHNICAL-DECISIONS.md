@@ -130,6 +130,17 @@ entre ACK de Kafka y persistencia del consumer.
 - Tres reintentos adicionales con intervalo fijo de 1 segundo.
 - Errores permanentes van directamente al DLT.
 - Errores transitorios agotados van al DLT.
+- Excepción: Oracle no disponible (errores de conexión o de inicio de
+  transacción: `CannotCreateTransactionException`,
+  `DataAccessResourceFailureException`,
+  `TransientDataAccessResourceException`,
+  `RecoverableDataAccessException`) se reintenta sin límite con backoff
+  exponencial de 1 s a 30 s; no va al DLT y no confirma el offset
+  mientras dure la caída. El tope de 30 s queda muy por debajo de
+  `max.poll.interval.ms`, porque la espera ocurre en el hilo del consumer.
+- Riesgo: un error de datos clasificado como caída bloquearía la única
+  partición; por eso solo se listan tipos de conexión e inicio de
+  transacción, y bloqueos o timeouts siguen el camino finito.
 - `DeadLetterPublishingRecoverer` para publicar al DLT.
 - Si falla la publicación al DLT, no confirmar el offset original.
 - No implementar consumidor ni reprocesamiento automático del DLT.
